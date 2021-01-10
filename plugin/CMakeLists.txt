@@ -38,6 +38,7 @@ set(PLUGIN_LISTS
     flattenConcat
     generateDetectionPlugin
     gridAnchorPlugin
+    gridSamplerPlugin
     groupNormalizationPlugin
     instanceNormalizationPlugin
     leakyReluPlugin
