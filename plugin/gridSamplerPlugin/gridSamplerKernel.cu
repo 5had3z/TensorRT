@@ -14,11 +14,18 @@
  * limitations under the License.
  */
 
-#include "cuda_fp16.h"
 #include "gridSamplerPlugin.h"
 
 #include <cassert>
+#include <cuda_fp16.h>
 #include <limits>
+#include <stdexcept>
+
+using nvinfer1::plugin::GridSampler::Interpolation;
+using nvinfer1::plugin::GridSampler::Padding;
+
+// Use 1024 threads per block, which requires cuda sm_2x or above
+constexpr static int CUDA_NUM_THREADS = 1024;
 
 // CUDA: grid stride looping
 //
@@ -37,11 +44,10 @@
 inline int GET_BLOCKS(const int64_t N)
 {
     assert(N > 0 && "CUDA kernel launch blocks must be positive");
-    constexpr int64_t max_int = std::numeric_limits<int>::max();
 
     // Round up division for positive number that cannot cause integer overflow
     auto block_num = (N - 1) / CUDA_NUM_THREADS + 1;
-    assert(block_num <= max_int && "Can't schedule too many blocks on CUDA device");
+    assert(block_num <= std::numeric_limits<int>::max() && "Can't schedule too many blocks on CUDA device");
 
     return static_cast<int>(block_num);
 }
@@ -141,15 +147,15 @@ static __forceinline__ __device__ scalar_t safe_downgrade_to_int_range(scalar_t 
 // Computes the pixel source index value for a grid coordinate
 template <typename scalar_t>
 static __forceinline__ __device__ scalar_t grid_sampler_compute_source_index(
-    scalar_t coord, int size, GridSampler::Padding padding_mode, bool align_corners)
+    scalar_t coord, int size, Padding padding_mode, bool align_corners)
 {
     coord = grid_sampler_unnormalize(coord, size, align_corners);
-    if (padding_mode == GridSampler::Padding::Border)
+    if (padding_mode == Padding::Border)
     {
         // clip coordinates to image borders
         coord = clip_coordinates(coord, size);
     }
-    else if (padding_mode == GridSampler::Padding::Reflection)
+    else if (padding_mode == Padding::Reflection)
     {
         // reflect coordinates by image borders
         if (align_corners)
@@ -171,7 +177,7 @@ static __forceinline__ __device__ scalar_t grid_sampler_compute_source_index(
 template <typename scalar_t>
 __global__ void gridSamplerKernel(const size_t nthreads, const scalar_t* __restrict__ input, size_t C, size_t inp_H,
     size_t inp_W, const scalar_t* __restrict__ grid, scalar_t* output, size_t out_H, size_t out_W,
-    const GridSampler::Interpolation interpolation_mode, const GridSampler::Padding padding_mode, bool align_corners)
+    const Interpolation interpolation_mode, const Padding padding_mode, bool align_corners)
 {
     // Input Strides
     size_t inp_sN = C * inp_H * inp_W;
@@ -299,7 +305,7 @@ int GridSamplerPlugin::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     }
     default:
     {
-        throw(std::runtime_error{"Grid Sampler Unsupported Input Type"});
+        throw std::runtime_error{"Grid Sampler Unsupported Input Type"};
         break;
     }
     }

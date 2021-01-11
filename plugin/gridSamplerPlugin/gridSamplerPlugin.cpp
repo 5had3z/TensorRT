@@ -33,6 +33,9 @@ std::vector<nvinfer1::PluginField> GridSamplerPluginCreator::mPluginAttributes;
 REGISTER_TENSORRT_PLUGIN(GridSamplerPluginCreator);
 
 GridSamplerPlugin::GridSamplerPlugin(const PluginFieldCollection& fc)
+    : mAlignCorners{false}
+    , mInterpolationMode{Interpolation::Bilinear}
+    , mPaddingMode{Padding::Border}
 {
     for (int i = 0; i < fc.nbFields; ++i)
     {
@@ -52,14 +55,6 @@ GridSamplerPlugin::GridSamplerPlugin(const PluginFieldCollection& fc)
             assert(fc.fields[i].type == nvinfer1::PluginFieldType::kINT32);
             mPaddingMode = *(static_cast<const GridSampler::Padding*>(fc.fields[i].data));
         }
-    }
-
-    if (!fc.nbFields)
-    {
-        std::cerr << "Grid_sampler Plugin: No fields detected, using default parameters";
-        mAlignCorners = false;
-        mInterpolationMode = Interpolation::Bilinear;
-        mPaddingMode = Padding::Border;
     }
 }
 
