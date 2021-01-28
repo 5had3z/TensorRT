@@ -346,19 +346,19 @@ __global__ void gridSamplerKernel(const size_t nthreads, const scalar_t* __restr
                 {
                     if (within_bounds_2d(iy_nw, ix_nw, inp_H, inp_W))
                     {
-                        output_ += (float)inp_ptr_NC[iy_nw * inp_sH + ix_nw * inp_sW] * nw;
+                        output_ += (float) inp_ptr_NC[iy_nw * inp_sH + ix_nw * inp_sW] * nw;
                     }
                     if (within_bounds_2d(iy_ne, ix_ne, inp_H, inp_W))
                     {
-                        output_ += (float)inp_ptr_NC[iy_ne * inp_sH + ix_ne * inp_sW] * ne;
+                        output_ += (float) inp_ptr_NC[iy_ne * inp_sH + ix_ne * inp_sW] * ne;
                     }
                     if (within_bounds_2d(iy_sw, ix_sw, inp_H, inp_W))
                     {
-                        output_ += (float)inp_ptr_NC[iy_sw * inp_sH + ix_sw * inp_sW] * sw;
+                        output_ += (float) inp_ptr_NC[iy_sw * inp_sH + ix_sw * inp_sW] * sw;
                     }
                     if (within_bounds_2d(iy_se, ix_se, inp_H, inp_W))
                     {
-                        output_ += (float)inp_ptr_NC[iy_se * inp_sH + ix_se * inp_sW] * se;
+                        output_ += (float) inp_ptr_NC[iy_se * inp_sH + ix_se * inp_sW] * se;
                     }
                     *out_ptr_NCHW = output_;
                 }
