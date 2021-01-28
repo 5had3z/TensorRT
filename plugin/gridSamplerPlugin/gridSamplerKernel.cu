@@ -90,7 +90,11 @@ static __forceinline__ __device__ float clip_coordinates(float in, int clip_limi
 
 static __forceinline__ __device__ __half clip_coordinates(__half in, int clip_limit)
 {
+#if __CUDA_ARCH__ > 800
     return __hmin(static_cast<__half>(clip_limit - 1), __hmax(in, static_cast<__half>(0.f)));
+#else
+    return fminf(static_cast<float>(clip_limit - 1.f), fmaxf(__half2float(in), 0.f));
+#endif
 }
 
 // Reflects coordinates until they fall between low and high (inclusive).
@@ -121,6 +125,7 @@ static __forceinline__ __device__ __half reflect_coordinates(__half in, int twic
         return static_cast<__half>(0);
     }
 
+#if __CUDA_ARCH__ >= 530
     __half min = __hdiv(static_cast<__half>(twice_low), 2);
     __half span = __hdiv(static_cast<__half>(twice_high - twice_low), 2);
     in = __habs(in - min);
@@ -130,6 +135,17 @@ static __forceinline__ __device__ __half reflect_coordinates(__half in, int twic
     int flips = static_cast<int>(hfloor(in / span));
 
     return flips % 2 == 0 ? extra + min : span - extra + min;
+#else
+    float min = static_cast<float>(twice_low) / 2.f;
+    float span = static_cast<float>(twice_high - twice_low) / 2.f;
+    float in_ = ::fabs(__half2float(in) - min);
+
+    // `fmod` returns same sign as `in`, which is positive after the `fabs` above.
+    float extra = fmodf(in_, span);
+    int flips = static_cast<int>(floorf(in_ / span));
+
+    return flips % 2 == 0 ? extra + min : span - extra + min;
+#endif
 }
 
 template <typename scalar_t>
@@ -145,9 +161,8 @@ static __forceinline__ __device__ scalar_t safe_downgrade_to_int_range(scalar_t 
 }
 
 // Computes the pixel source index value for a grid coordinate
-template <typename scalar_t>
-static __forceinline__ __device__ scalar_t grid_sampler_compute_source_index(
-    scalar_t coord, int size, Padding padding_mode, bool align_corners)
+static __forceinline__ __device__ float grid_sampler_compute_source_index(
+    float coord, int size, Padding padding_mode, bool align_corners)
 {
     coord = grid_sampler_unnormalize(coord, size, align_corners);
     if (padding_mode == Padding::Border)
@@ -172,6 +187,35 @@ static __forceinline__ __device__ scalar_t grid_sampler_compute_source_index(
 
     coord = safe_downgrade_to_int_range(coord);
     return coord;
+}
+
+// Computes the pixel source index value for a grid coordinate
+static __forceinline__ __device__ __half grid_sampler_compute_source_index(
+    __half coord, int size, Padding padding_mode, bool align_corners)
+{
+    float coord_ = grid_sampler_unnormalize(__half2float(coord), size, align_corners);
+    if (padding_mode == Padding::Border)
+    {
+        // clip coordinates to image borders
+        coord_ = clip_coordinates(coord_, size);
+    }
+    else if (padding_mode == Padding::Reflection)
+    {
+        // reflect coordinates by image borders
+        if (align_corners)
+        {
+            coord_ = reflect_coordinates(coord_, 0, 2 * (size - 1));
+        }
+        else
+        {
+            coord_ = reflect_coordinates(coord_, -1, 2 * size - 1);
+        }
+        // clip coordinates to image borders
+        coord_ = clip_coordinates(coord_, size);
+    }
+
+    coord_ = safe_downgrade_to_int_range(coord_);
+    return __float2half(coord_);
 }
 
 template <typename scalar_t>
@@ -205,8 +249,23 @@ __global__ void gridSamplerKernel(const size_t nthreads, const scalar_t* __restr
         const size_t grid_offset = n * grid_sN + h * grid_sH + w * grid_sW;
 
         // get the corresponding input x, y co-ordinates from grid
+#if __CUDA_ARCH__ >= 530
         scalar_t ix = grid[grid_offset];
         scalar_t iy = grid[grid_offset + grid_sCoor];
+#else
+        float ix;
+        float iy;
+        if (std::is_same<scalar_t, __half>::value)
+        {
+            ix = __half2float(grid[grid_offset]);
+            iy = __half2float(grid[grid_offset + grid_sCoor]);
+        }
+        else
+        {
+            ix = grid[grid_offset];
+            iy = grid[grid_offset + grid_sCoor];
+        }
+#endif
 
         ix = grid_sampler_compute_source_index(ix, inp_W, padding_mode, align_corners);
         iy = grid_sampler_compute_source_index(iy, inp_H, padding_mode, align_corners);
@@ -224,14 +283,21 @@ __global__ void gridSamplerKernel(const size_t nthreads, const scalar_t* __restr
             int32_t iy_se = iy_nw + 1;
 
             // get surfaces to each neighbor:
+#if __CUDA_ARCH__ >= 530
             scalar_t nw = (static_cast<scalar_t>(ix_se) - ix) * (static_cast<scalar_t>(iy_se) - iy);
             scalar_t ne = (ix - static_cast<scalar_t>(ix_sw)) * (static_cast<scalar_t>(iy_sw) - iy);
             scalar_t sw = (static_cast<scalar_t>(ix_ne) - ix) * (iy - static_cast<scalar_t>(iy_ne));
             scalar_t se = (ix - static_cast<scalar_t>(ix_nw)) * (iy - static_cast<scalar_t>(iy_nw));
-
+#else
+            float nw = (static_cast<float>(ix_se) - ix) * (static_cast<float>(iy_se) - iy);
+            float ne = (ix - static_cast<float>(ix_sw)) * (static_cast<float>(iy_sw) - iy);
+            float sw = (static_cast<float>(ix_ne) - ix) * (iy - static_cast<float>(iy_ne));
+            float se = (ix - static_cast<float>(ix_nw)) * (iy - static_cast<float>(iy_nw));
+#endif
             // calculate bilinear weighted pixel value and set output pixel
             auto inp_ptr_NC = input + n * inp_sN;
             auto out_ptr_NCHW = output + n * out_sN + h * out_sH + w * out_sW;
+#if __CUDA_ARCH__ >= 530
             for (size_t c = 0; c < C; ++c, inp_ptr_NC += inp_sC, out_ptr_NCHW += out_sC)
             {
                 *out_ptr_NCHW = static_cast<scalar_t>(0);
@@ -252,6 +318,52 @@ __global__ void gridSamplerKernel(const size_t nthreads, const scalar_t* __restr
                     *out_ptr_NCHW += inp_ptr_NC[iy_se * inp_sH + ix_se * inp_sW] * se;
                 }
             }
+#else
+            for (size_t c = 0; c < C; ++c, inp_ptr_NC += inp_sC, out_ptr_NCHW += out_sC)
+            {
+                float output_ = 0.f;
+                if (std::is_same<scalar_t, __half>::value)
+                {
+                    if (within_bounds_2d(iy_nw, ix_nw, inp_H, inp_W))
+                    {
+                        output_ += __half2float(inp_ptr_NC[iy_nw * inp_sH + ix_nw * inp_sW]) * nw;
+                    }
+                    if (within_bounds_2d(iy_ne, ix_ne, inp_H, inp_W))
+                    {
+                        output_ += __half2float(inp_ptr_NC[iy_ne * inp_sH + ix_ne * inp_sW]) * ne;
+                    }
+                    if (within_bounds_2d(iy_sw, ix_sw, inp_H, inp_W))
+                    {
+                        output_ += __half2float(inp_ptr_NC[iy_sw * inp_sH + ix_sw * inp_sW]) * sw;
+                    }
+                    if (within_bounds_2d(iy_se, ix_se, inp_H, inp_W))
+                    {
+                        output_ += __half2float(inp_ptr_NC[iy_se * inp_sH + ix_se * inp_sW]) * se;
+                    }
+                    *out_ptr_NCHW = __float2half(output_);
+                }
+                else
+                {
+                    if (within_bounds_2d(iy_nw, ix_nw, inp_H, inp_W))
+                    {
+                        output_ += (float)inp_ptr_NC[iy_nw * inp_sH + ix_nw * inp_sW] * nw;
+                    }
+                    if (within_bounds_2d(iy_ne, ix_ne, inp_H, inp_W))
+                    {
+                        output_ += (float)inp_ptr_NC[iy_ne * inp_sH + ix_ne * inp_sW] * ne;
+                    }
+                    if (within_bounds_2d(iy_sw, ix_sw, inp_H, inp_W))
+                    {
+                        output_ += (float)inp_ptr_NC[iy_sw * inp_sH + ix_sw * inp_sW] * sw;
+                    }
+                    if (within_bounds_2d(iy_se, ix_se, inp_H, inp_W))
+                    {
+                        output_ += (float)inp_ptr_NC[iy_se * inp_sH + ix_se * inp_sW] * se;
+                    }
+                    *out_ptr_NCHW = output_;
+                }
+            }
+#endif
         }
         else if (interpolation_mode == Interpolation::Nearest)
         {
@@ -306,7 +418,6 @@ int GridSamplerPlugin::enqueue(const nvinfer1::PluginTensorDesc* inputDesc,
     default:
     {
         throw std::runtime_error{"Grid Sampler Unsupported Input Type"};
-        break;
     }
     }
 
