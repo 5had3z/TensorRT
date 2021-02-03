@@ -85,15 +85,15 @@ static __forceinline__ __device__ scalar_t grid_sampler_unnormalize(scalar_t coo
 // Clips coordinates to between 0 and clip_limit - 1
 static __forceinline__ __device__ float clip_coordinates(float in, int clip_limit)
 {
-    return fminf(static_cast<float>(clip_limit - 1.f), fmaxf(in, 0.f));
+    return fminf(static_cast<float>(clip_limit - 1), fmaxf(in, 0.f));
 }
 
 static __forceinline__ __device__ __half clip_coordinates(__half in, int clip_limit)
 {
-#if __CUDA_ARCH__ > 800
+#if __CUDA_ARCH__ >= 800
     return __hmin(static_cast<__half>(clip_limit - 1), __hmax(in, static_cast<__half>(0.f)));
 #else
-    return fminf(static_cast<float>(clip_limit - 1.f), fmaxf(__half2float(in), 0.f));
+    return fminf(static_cast<float>(clip_limit - 1), fmaxf(__half2float(in), 0.f));
 #endif
 }
 
@@ -319,11 +319,11 @@ __global__ void gridSamplerKernel(const size_t nthreads, const scalar_t* __restr
                 }
             }
 #else
-            for (size_t c = 0; c < C; ++c, inp_ptr_NC += inp_sC, out_ptr_NCHW += out_sC)
+            if (std::is_same<scalar_t, __half>::value)
             {
-                float output_ = 0.f;
-                if (std::is_same<scalar_t, __half>::value)
+                for (size_t c = 0; c < C; ++c, inp_ptr_NC += inp_sC, out_ptr_NCHW += out_sC)
                 {
+                    float output_ = 0.f;
                     if (within_bounds_2d(iy_nw, ix_nw, inp_H, inp_W))
                     {
                         output_ += __half2float(inp_ptr_NC[iy_nw * inp_sH + ix_nw * inp_sW]) * nw;
@@ -342,8 +342,12 @@ __global__ void gridSamplerKernel(const size_t nthreads, const scalar_t* __restr
                     }
                     *out_ptr_NCHW = __float2half(output_);
                 }
-                else
+            }
+            else
+            {
+                for (size_t c = 0; c < C; ++c, inp_ptr_NC += inp_sC, out_ptr_NCHW += out_sC)
                 {
+                    float output_ = 0.f;
                     if (within_bounds_2d(iy_nw, ix_nw, inp_H, inp_W))
                     {
                         output_ += (float) inp_ptr_NC[iy_nw * inp_sH + ix_nw * inp_sW] * nw;
